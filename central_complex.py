@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.special import expit
-
+import memory_cell_model_class as mc
 
 def gen_tb_tb_weights(weight=1.):
     """Weight matrix to map inhibitory connections from TB1 to other neurons"""
@@ -127,6 +127,17 @@ class CX:
         self.cpu1_slope = cpu1_slope
         self.cpu1_bias = cpu1_bias
 
+        # Manually selected membrane conductance for the CPU4 memory neuron model.
+        # The original 2-neuron memory model in the paper is using 1.0 but to create 
+        # a small leakage I increased the conductance a bit. The range of acceptable 
+        # conductance values is at least 1.0 to 1.0001.
+        G = 1.00001
+        # The 2-neuron memory model instances are stored in a list with 16 items.
+        self.cpu4_vector = [mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G), 
+                            mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G),
+                            mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G), 
+                            mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G), mc.MemCell(Gm=G)]
+        
     def tl2_output(self, theta):
         """Just a dot product with preferred angle and current heading"""
         output = np.cos(theta - self.tl2_prefs)
@@ -148,15 +159,38 @@ class CX:
         """Memory neurons update."""
         cpu4_mem -= speed * self.cpu4_mem_loss
 
-        # Trying to keep memory between 0 and 1 because easier to tune bias
-        cpu4_mem += (speed * self.cpu4_mem_gain *
-                     np.dot(self.W_TB1_CPU4, 1.0 - tb1))
-        cpu4_mem = np.clip(cpu4_mem, 0, 1)
-        return cpu4_mem
+        # Each of the 2-neuron memory model instances is stored in a list of 16 items,
+        # thus for updating it I do some silly trickery. Sorry...
+        i = 0
+        for value in cpu4_mem:
+            self.cpu4_vector[i].set_value(value)
+            i += 1
+        
+        # I kept your formula as it was.
+        delta_values = (speed * self.cpu4_mem_gain *
+                           np.dot(self.W_TB1_CPU4, 1.0 - tb1))
+        # I use here a temporary cpu4 values list for this function to return.
+        cpu4_mem_out = np.zeros(n_cpu4)
+        # I update the proper cpu4 memory cells as well as copy the values to the temporary list.
+        i = 0
+        for value in delta_values:
+            self.cpu4_vector[i].set_value(self.cpu4_vector[i].get_value() + value)
+            cpu4_mem_out[i] = self.cpu4_vector[i].get_value()
+            i += 1
+        # I return the temporary list with the copies of the updated cpu4 memory values.
+        return cpu4_mem_out
 
     def cpu4_output(self, cpu4_mem):
         """The output from memory neuron, based on current calcium levels."""
-        return noisy_sigmoid(cpu4_mem, self.cpu4_slope,
+        # I use here a temporary cpu4 values list for this function to return.
+        cpu4_mem_out = np.zeros(n_cpu4)
+        # I read the cpu4 memory values and copy them to the temporary list to be returned.
+        i = 0
+        for cpu4_vector_element in self.cpu4_vector:
+            cpu4_mem_out[i] = cpu4_vector_element.get_value()
+            i += 1
+        # Return the values after passing through the sigmoid. (I kept this as it was).
+        return noisy_sigmoid(cpu4_mem_out, self.cpu4_slope,
                              self.cpu4_bias, self.noise)
 
     def cpu1_output(self, tb1, cpu4):
